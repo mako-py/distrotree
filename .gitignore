@@ -1,0 +1,12 @@
+# Build output
+/distrotree
+*.o
+*.a
+*.so
+
+# Editor and OS files
+*~
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
