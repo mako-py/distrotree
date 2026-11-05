@@ -1,27 +1,3 @@
-/*
- * distrotree - an interactive family tree of operating systems
- *
- * build:  cc -O2 -Wall -o distrotree distrotree.c $(pkg-config --cflags --libs ncursesw)
- * run:    ./distrotree
- * text:   ./distrotree --dump [zoom 0-4]     (print the whole forest to stdout)
- *
- * mouse:  hover a name        show its story in the panel
- *         left click          fold / unfold that branch
- *         wheel               scroll          shift+wheel  scroll sideways
- *         ctrl+wheel          zoom around the pointer
- * keys:   arrows / hjkl       pan (they never change the selection)
- *         shift+arrows / HJKL / PgUp PgDn   pan faster
- *         + / -               zoom (semantic: deeper branches, years, spacing)
- *         Enter / Space       fold / unfold the selected branch
- *         c / a               collapse to an overview / expand everything
- *         0 or Home           reset view        q  quit
- *
- * Without a mouse the name nearest the screen centre is selected instead.
- *
- * The data is stored in pre-order with an explicit depth, so adding an entry
- * is one line: put it right below its parent, one level deeper. A depth-0
- * entry starts a new, unrelated tree.
- */
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
@@ -30,22 +6,21 @@
 #endif
 #include <ctype.h>
 #include <langinfo.h>
-#include <time.h>
 #include <locale.h>
 #include <ncurses.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <wchar.h>
 
 typedef struct { int depth; const char *name; int year; const char *note; int kind; } Def;
-#define T(d, n, y, t) { d, n, y, t, 0 }   /* normal node                          */
-#define S(d, n, y, t) { d, n, y, t, 1 }   /* stub: shown dim, not part of a family */
-#define K(d, n, y, t) { d, n, y, t, 2 }   /* trunk: its children start new colours */
+#define T(d, n, y, t) { d, n, y, t, 0 }
+#define S(d, n, y, t) { d, n, y, t, 1 }
+#define K(d, n, y, t) { d, n, y, t, 2 }
 
 static const Def defs[] = {
- /* ======================= Multics -> Unix -> everything ======================= */
  K(0,"Multics",1964,"Time-sharing OS from MIT, GE and Bell Labs. Bell Labs left the project in 1969; its sprawling design is why Unix ('Unics') was kept small."),
  K(1,"Unix",1969,"Written at Bell Labs by Ken Thompson and Dennis Ritchie, rewritten in C in 1973. Root of every Unix and Unix-like system."),
  K(2,"Linux",1991,"A Unix-like kernel written from scratch by Linus Torvalds (first developed on MINIX). No Unix code, but Unix by design; paired with the GNU userland (1983)."),
@@ -193,7 +168,6 @@ static const Def defs[] = {
    T(5,"Lakka",2015,"Retro-gaming console OS built on LibreELEC: RetroArch plus a game-console menu."),
  T(3,"webOS",2009,"Palm's Linux-based mobile OS. HP bought it and LG now uses it on its smart TVs."),
 
- /* ------------------------------- BSD and friends ------------------------------ */
  T(2,"BSD",1977,"Berkeley Software Distribution: Bill Joy's additions to Unix, eventually rewritten free of AT&T code (4.4BSD). A cousin of Linux, not a child."),
   T(3,"386BSD",1992,"Bill and Lynne Jolitz's port of BSD to the 386. Stalled patches and legal limbo led to FreeBSD and NetBSD."),
    T(4,"FreeBSD",1993,"Performance and features first: ZFS, jails, bhyve and the permissive BSD licence. The most widely deployed BSD."),
@@ -216,7 +190,6 @@ static const Def defs[] = {
     T(5,"macOS",2001,"Mac OS X in 2001; certified UNIX. Apple's desktop OS."),
     T(5,"iOS",2007,"Apple's phone OS, descended from the Darwin core."),
 
- /* --------------------------- System V and commercial Unix --------------------- */
  T(2,"System V",1983,"AT&T's commercial Unix; ancestor of Solaris, AIX and HP-UX."),
   T(3,"Solaris",1992,"Sun's SVR4-based Unix (SunOS 5); known for ZFS, DTrace and zones."),
    T(4,"OpenSolaris",2008,"Sun's open-source Solaris. Oracle closed it again in 2010."),
@@ -229,7 +202,6 @@ static const Def defs[] = {
   T(3,"UnixWare",1992,"Novell's System V Release 4.2 product; later owned by SCO, centre of the SCO v. IBM lawsuits."),
   T(3,"IRIX",1988,"SGI's Unix for MIPS graphics workstations."),
 
- /* ----------------------- Other Unix-like systems, from scratch ---------------- */
  T(2,"Plan 9",1992,"Bell Labs' successor to Unix: everything is a file, per-process namespaces, the 9P protocol. UTF-8 was invented here."),
   T(3,"Inferno",1996,"Plan 9 spin-off from Lucent with the Limbo language and a virtual machine."),
   T(3,"9front",2011,"Actively developed community fork of Plan 9."),
@@ -242,7 +214,6 @@ static const Def defs[] = {
  T(2,"Redox OS",2015,"Microkernel Unix-like OS written entirely in Rust, started by Jeremy Soller."),
  T(2,"SerenityOS",2018,"Andreas Kling's from-scratch Unix-like desktop; even the browser (Ladybird) began here."),
 
- /* ----------------------- Entirely separate family trees ----------------------- */
  T(0,"CP/M",1974,"Gary Kildall's early microcomputer OS, which DOS was modelled on."),
   T(1,"86-DOS",1980,"Tim Paterson's QDOS for the 8086, bought by Microsoft as the basis of MS-DOS."),
    T(2,"MS-DOS",1981,"Microsoft's PC OS, shipped as PC-DOS on the IBM PC."),
@@ -271,41 +242,36 @@ static const Def defs[] = {
 enum { N = sizeof defs / sizeof defs[0] };
 _Static_assert(N > 0, "defs[] is empty");
 
-#define MAXD 16            /* max tree depth supported */
-#define NPAL 12            /* colours for families (they wrap) */
+#define MAXD 16
+#define NPAL 12
 #define PANEL 6
 #define NOTE_LINES 3
 
 typedef struct {
     const Def *d;
     int parent, first, last, next, ndesc;
-    int family;                /* -1 trunk, -2 standalone, >=0 colour index */
-    int root;                  /* first node of a coloured branch */
-    int force;                 /* 0 follow zoom level, 1 folded, 2 unfolded */
-    int visible, open, hidden; /* open = children shown; hidden = # folded away */
-    int x, y, w, ox, oy;       /* layout (and previous layout, for re-anchoring) */
+    int family;
+    int root;
+    int force;
+    int visible, open, hidden;
+    int x, y, w, ox, oy;
     char label[96];
 } Node;
 
+typedef struct { unsigned cp; int attr; } Cell;
+
 static Node nd[N];
 static int roots[N], nroots;
-static int zoom = 1;                              /* 0 (far) .. 4 (close) */
+static int zoom = 1;
 static const int maxdepth[5] = { 3, 4, 5, 99, 99 };
 static int colx[MAXD], maxw[MAXD], worldw, worldh;
 static int utf8, linux_idx, have_mouse, pal_bold[NPAL];
-static int no_color = 0;
-static int startup_fold = 0;
-static int branch_root = -1;
-static int branch_depth = 0;
-static int startup_select = -1;
+static int no_color, startup_fold, startup_select = -1, pinned;
+static int branch_root = -1, branch_depth;
 static int mx = -1, my = -1, sel = -1;
 static volatile sig_atomic_t quit_flag;
-
-typedef struct { unsigned cp; int attr; } Cell;
 static Cell *cv;
 static int cvw, cvh, camx, camy;
-
-/* ---------- tree construction ---------- */
 
 static int build(void)
 {
@@ -327,15 +293,18 @@ static int build(void)
             n->parent = p;
             if (nd[p].first < 0) nd[p].first = i; else nd[nd[p].last].next = i;
             nd[p].last = i;
-        } else roots[nroots++] = i;
+        } else {
+            roots[nroots++] = i;
+        }
         stack[dep] = i;
         prev = dep;
         if (linux_idx < 0 && !strcmp(defs[i].name, "Linux")) linux_idx = i;
     }
-    if (linux_idx < 0) { fputs("distrotree: no \"Linux\" entry\n", stderr); return -1; }
+    if (linux_idx < 0) {
+        fputs("distrotree: no \"Linux\" entry\n", stderr);
+        return -1;
+    }
 
-    /* colours: every branch starting right under a trunk (or a tree root) that
-       has descendants gets its own colour; childless ones stay plain */
     int fam = 0;
     for (int i = 0; i < N; i++) {
         Node *n = &nd[i];
@@ -344,19 +313,19 @@ static int build(void)
         if (nd[p].d->depth == 0 || nd[p].d->kind == 2) {
             n->root = 1;
             n->family = n->first >= 0 ? fam++ : -2;
-        } else n->family = nd[p].family;
+        } else {
+            n->family = nd[p].family;
+        }
     }
-    for (int i = N - 1; i > 0; i--) nd[nd[i].parent].ndesc += 1 + nd[i].ndesc;
+    for (int i = N - 1; i > 0; i--)
+        if (nd[i].parent >= 0) nd[nd[i].parent].ndesc += 1 + nd[i].ndesc;
     return 0;
 }
-
-/* ---------- option helpers ---------- */
 
 static int eq_ci(const char *a, const char *b)
 {
     while (*a && *b) {
-        if (tolower((unsigned char)*a) != tolower((unsigned char)*b))
-            return 0;
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
         a++;
         b++;
     }
@@ -366,11 +335,9 @@ static int eq_ci(const char *a, const char *b)
 static int contains_ci(const char *text, const char *query)
 {
     if (!*query) return 1;
-
     for (; *text; text++) {
         const char *a = text, *b = query;
-        while (*a && *b &&
-               tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
             a++;
             b++;
         }
@@ -378,8 +345,6 @@ static int contains_ci(const char *text, const char *query)
     }
     return 0;
 }
-
-
 
 static int in_scope(int i, int root)
 {
@@ -392,15 +357,10 @@ static int in_scope(int i, int root)
 static int find_node(const char *query, int scope)
 {
     int partial = -1;
-
     for (int i = 0; i < N; i++) {
         if (!in_scope(i, scope)) continue;
-
-        if (eq_ci(nd[i].d->name, query))
-            return i;
-
-        if (partial < 0 && contains_ci(nd[i].d->name, query))
-            partial = i;
+        if (eq_ci(nd[i].d->name, query)) return i;
+        if (partial < 0 && contains_ci(nd[i].d->name, query)) partial = i;
     }
     return partial;
 }
@@ -408,12 +368,9 @@ static int find_node(const char *query, int scope)
 static int random_node(int scope)
 {
     int count = 0;
-
     for (int i = 0; i < N; i++)
         if (in_scope(i, scope)) count++;
-
     if (!count) return -1;
-
     int pick = rand() % count;
     for (int i = 0; i < N; i++) {
         if (!in_scope(i, scope)) continue;
@@ -440,12 +397,13 @@ static void show_help(const char *name)
         "  --full-unfold              start with every branch unfolded\n"
         "\n"
         "searches are case-insensitive and accept partial names. --branch and\n"
-        "--search can be combined; --random can be used with --branch.\n",
+        "--search can be combined; --random can be used with --branch.\n"
+        "\n"
+        "mouse: hover to read, click to fold, wheel to scroll, ctrl+wheel to zoom\n"
+        "keys:  arrows/hjkl pan, +/- zoom, Enter fold, c collapse, a expand, 0 reset, q quit\n",
         name
     );
 }
-
-/* ---------- layout ---------- */
 
 static int rowstep(void) { return zoom >= 4 ? 2 : 1; }
 
@@ -454,7 +412,8 @@ static void lay(int i, int *row)
     Node *n = &nd[i];
     n->visible = 1;
     int want = n->d->depth - branch_depth < maxdepth[zoom];
-    if (n->force == 1) want = 0; else if (n->force == 2) want = 1;
+    if (n->force == 1) want = 0;
+    else if (n->force == 2) want = 1;
     n->open = n->first >= 0 && want;
     n->hidden = (n->first >= 0 && !n->open) ? n->ndesc : 0;
     int len = snprintf(n->label, sizeof n->label, "%s", n->d->name);
@@ -463,7 +422,10 @@ static void lay(int i, int *row)
     if (n->hidden)
         snprintf(n->label + len, sizeof n->label - len, " [+%d]", n->hidden);
     n->w = (int)strlen(n->label);
-    if (!n->open) { n->y = (*row)++ * rowstep(); return; }
+    if (!n->open) {
+        n->y = (*row)++ * rowstep();
+        return;
+    }
     for (int c = n->first; c >= 0; c = nd[c].next) lay(c, row);
     n->y = (nd[n->first].y + nd[n->last].y) / 2;
 }
@@ -477,33 +439,35 @@ static void layout(void)
     } else {
         for (int r = 0; r < nroots; r++) {
             lay(roots[r], &row);
-            row++;                               /* blank row between trees */
+            row++;
         }
     }
     memset(maxw, 0, sizeof maxw);
-    for (int i = 0; i < N; i++) if (nd[i].visible) {
+    for (int i = 0; i < N; i++) {
+        if (!nd[i].visible) continue;
         int d = nd[i].d->depth - branch_depth;
         if (nd[i].w > maxw[d]) maxw[d] = nd[i].w;
         if (d > maxd) maxd = d;
         if (nd[i].y > maxy) maxy = nd[i].y;
     }
     worldh = maxy + 1;
-    int gap = zoom >= 3 ? 7 : 5;     /* room for "-+- " between columns */
+    int gap = zoom >= 3 ? 7 : 5;
     colx[0] = 0;
     for (int d = 1; d <= maxd; d++) colx[d] = colx[d - 1] + maxw[d - 1] + gap;
-    for (int i = 0; i < N; i++) if (nd[i].visible) nd[i].x = colx[nd[i].d->depth - branch_depth];
+    for (int i = 0; i < N; i++)
+        if (nd[i].visible) nd[i].x = colx[nd[i].d->depth - branch_depth];
     worldw = colx[maxd] + maxw[maxd];
 }
 
-/* ---------- drawing into a cell canvas ---------- */
-
-static const unsigned G[16] = {            /* bits: U=1 D=2 L=4 R=8 */
+static const unsigned G[16] = {
     ' ', 0x2502, 0x2502, 0x2502, 0x2500, 0x2518, 0x2510, 0x2524,
-    0x2500, 0x2514, 0x250C, 0x251C, 0x2500, 0x2534, 0x252C, 0x253C };
+    0x2500, 0x2514, 0x250C, 0x251C, 0x2500, 0x2534, 0x252C, 0x253C
+};
 
 static void cput(int y, int x, unsigned cp, int attr)
 {
-    y -= camy; x -= camx;
+    y -= camy;
+    x -= camx;
     if (y < 0 || y >= cvh || x < 0 || x >= cvw) return;
     cv[y * cvw + x].cp = cp;
     cv[y * cvw + x].attr = attr;
@@ -517,37 +481,26 @@ static void ctext(int y, int x, const char *s, int attr)
 static int fattr(int i)
 {
     Node *n = &nd[i];
-
-    if (no_color) {
-        if (n->d->kind == 1) return A_DIM;
-        if (n->family == -1) return A_BOLD;
-        return A_NORMAL;
-    }
-
-
     if (n->d->kind == 1) return A_DIM;
     if (n->family == -1) return A_BOLD;
-    if (n->family == -2) return A_NORMAL;
-
+    if (n->family == -2 || no_color) return A_NORMAL;
     int k = n->family % NPAL;
     int a = COLOR_PAIR(k + 1);
-
     if (pal_bold[k]) a |= A_BOLD;
     return a;
 }
 
 static void draw_tree(int hl)
 {
-    static char onpath[N];
-    memset(onpath, 0, sizeof onpath);
-    for (int i = hl; i >= 0; i = nd[i].parent) onpath[i] = 1;
-
-    for (int i = 0; i < cvw * cvh; i++) { cv[i].cp = ' '; cv[i].attr = 0; }
+    for (int i = 0; i < cvw * cvh; i++) {
+        cv[i].cp = ' ';
+        cv[i].attr = 0;
+    }
     for (int p = 0; p < N; p++) {
         Node *pn = &nd[p];
         if (!pn->visible || !pn->open) continue;
         int ymin = nd[pn->first].y, ymax = nd[pn->last].y;
-        int vx = nd[pn->first].x - 3, pa = fattr(p);   /* trunk column */
+        int vx = nd[pn->first].x - 3, pa = fattr(p);
         for (int x = pn->x + pn->w + 1; x < vx; x++) cput(pn->y, x, 0x2500, pa);
         for (int r = ymin; r <= ymax; r++) {
             int mask = 0, child = -1;
@@ -568,28 +521,43 @@ static void draw_tree(int hl)
         int a = fattr(i);
         if (n->root || n->d->kind == 2 || n->d->depth == 0) a |= A_BOLD;
         if (i == hl) a |= A_REVERSE;
-        else if (onpath[i]) a |= A_UNDERLINE;
         ctext(n->y, n->x, n->label, a);
     }
 }
 
 static int enc(unsigned cp, char *b)
 {
-    if (cp < 0x80)  { b[0] = (char)cp; b[1] = 0; return 1; }
-    if (cp < 0x800) { b[0] = (char)(0xC0 | (cp >> 6)); b[1] = (char)(0x80 | (cp & 63)); b[2] = 0; return 2; }
-    b[0] = (char)(0xE0 | (cp >> 12)); b[1] = (char)(0x80 | ((cp >> 6) & 63)); b[2] = (char)(0x80 | (cp & 63)); b[3] = 0;
+    if (cp < 0x80) {
+        b[0] = (char)cp;
+        b[1] = 0;
+        return 1;
+    }
+    if (cp < 0x800) {
+        b[0] = (char)(0xC0 | (cp >> 6));
+        b[1] = (char)(0x80 | (cp & 63));
+        b[2] = 0;
+        return 2;
+    }
+    b[0] = (char)(0xE0 | (cp >> 12));
+    b[1] = (char)(0x80 | ((cp >> 6) & 63));
+    b[2] = (char)(0x80 | (cp & 63));
+    b[3] = 0;
     return 3;
 }
 
-/* box-drawing code point -> ACS glyph, for non-UTF-8 terminals */
 static chtype acs_for(unsigned cp)
 {
     switch (cp) {
-    case 0x2500: return ACS_HLINE;    case 0x2502: return ACS_VLINE;
-    case 0x2518: return ACS_LRCORNER; case 0x2510: return ACS_URCORNER;
-    case 0x2514: return ACS_LLCORNER; case 0x250C: return ACS_ULCORNER;
-    case 0x2524: return ACS_RTEE;     case 0x251C: return ACS_LTEE;
-    case 0x2534: return ACS_BTEE;     case 0x252C: return ACS_TTEE;
+    case 0x2500: return ACS_HLINE;
+    case 0x2502: return ACS_VLINE;
+    case 0x2518: return ACS_LRCORNER;
+    case 0x2510: return ACS_URCORNER;
+    case 0x2514: return ACS_LLCORNER;
+    case 0x250C: return ACS_ULCORNER;
+    case 0x2524: return ACS_RTEE;
+    case 0x251C: return ACS_LTEE;
+    case 0x2534: return ACS_BTEE;
+    case 0x252C: return ACS_TTEE;
     case 0x253C: return ACS_PLUS;
     default:     return '?';
     }
@@ -597,33 +565,29 @@ static chtype acs_for(unsigned cp)
 
 static void blit(void)
 {
-    for (int y = 0; y < cvh; y++)
+    for (int y = 0; y < cvh; y++) {
         for (int x = 0; x < cvw; x++) {
             Cell c = cv[y * cvw + x];
             if (c.cp == ' ') continue;
+            attrset(c.attr);
             if (c.cp < 0x80) {
-                attrset(c.attr);
                 mvaddch(y, x, (chtype)c.cp);
-            } else {
-                int done = 0;
-                if (utf8) {
-                    wchar_t w[2] = { (wchar_t)c.cp, 0 };
-                    cchar_t cc;
-                    memset(&cc, 0, sizeof cc);
-                    if (setcchar(&cc, w, (attr_t)(c.attr & ~A_COLOR), (short)PAIR_NUMBER(c.attr), NULL) == OK
-                        && mvadd_wch(y, x, &cc) == OK)
-                        done = 1;
-                }
-                if (!done) {
-                    attrset(c.attr);
-                    mvaddch(y, x, acs_for(c.cp));
-                }
+                continue;
             }
+            int done = 0;
+            if (utf8) {
+                wchar_t w[2] = { (wchar_t)c.cp, 0 };
+                cchar_t cc;
+                memset(&cc, 0, sizeof cc);
+                if (setcchar(&cc, w, (attr_t)(c.attr & ~A_COLOR), (short)PAIR_NUMBER(c.attr), NULL) == OK
+                    && mvadd_wch(y, x, &cc) == OK)
+                    done = 1;
+            }
+            if (!done) mvaddch(y, x, acs_for(c.cp));
         }
+    }
     attrset(A_NORMAL);
 }
-
-/* ---------- panel ---------- */
 
 static void wrapn(const char *s, int w, char l[NOTE_LINES][256])
 {
@@ -639,9 +603,14 @@ static void wrapn(const char *s, int w, char l[NOTE_LINES][256])
             while (k > 0 && s[k] != ' ') k--;
             if (k > 0) n = k;
         }
-        memcpy(l[li], s, n); l[li][n] = 0;
-        s += n; len -= n;
-        while (*s == ' ') { s++; len--; }
+        memcpy(l[li], s, n);
+        l[li][n] = 0;
+        s += n;
+        len -= n;
+        while (*s == ' ') {
+            s++;
+            len--;
+        }
     }
     if (len > 0) {
         char *last = l[NOTE_LINES - 1];
@@ -654,7 +623,10 @@ static void panel(int f)
 {
     int W = COLS, y0 = LINES - PANEL, tw = W - 2;
     if (y0 < 0 || tw < 1) return;
-    for (int r = 0; r < PANEL; r++) { move(y0 + r, 0); clrtoeol(); }
+    for (int r = 0; r < PANEL; r++) {
+        move(y0 + r, 0);
+        clrtoeol();
+    }
     if (f >= 0) {
         Node *n = &nd[f];
         int chain[MAXD + 1], k = 0;
@@ -666,7 +638,9 @@ static void panel(int f)
         }
         int pl = (int)strlen(path);
         const char *ps = pl > tw ? path + pl - tw : path;
-        attron(A_BOLD); mvaddnstr(y0, 1, ps, tw); attroff(A_BOLD);
+        attron(A_BOLD);
+        mvaddnstr(y0, 1, ps, tw);
+        attroff(A_BOLD);
 
         attron(fattr(f) | A_BOLD);
         mvprintw(y0 + 1, 1, "%s (%d)", n->d->name, n->d->year);
@@ -680,7 +654,9 @@ static void panel(int f)
     } else {
         char s[96];
         snprintf(s, sizeof s, "%d systems in the tree", N);
-        attron(A_BOLD); mvaddnstr(y0, 1, s, tw); attroff(A_BOLD);
+        attron(A_BOLD);
+        mvaddnstr(y0, 1, s, tw);
+        attroff(A_BOLD);
         mvaddnstr(y0 + 1, 1, "Hover a name with the mouse to read its story.", tw);
         mvaddnstr(y0 + 2, 1, "Click or Enter folds a branch. Wheel scrolls, ctrl+wheel or +/- zooms.", tw);
         mvaddnstr(y0 + 3, 1, "c collapses to an overview, a expands everything, 0 resets the view.", tw);
@@ -692,10 +668,10 @@ static void panel(int f)
     snprintf(z, sizeof z, "zoom %d/5 ", zoom + 1);
     int zl = (int)strlen(z);
     if (bw > zl + 2) memcpy(bar + bw - zl, z, zl);
-    attron(A_REVERSE); mvaddnstr(y0 + PANEL - 1, 0, bar, bw); attroff(A_REVERSE);
+    attron(A_REVERSE);
+    mvaddnstr(y0 + PANEL - 1, 0, bar, bw);
+    attroff(A_REVERSE);
 }
-
-/* ---------- view control ---------- */
 
 static int find_focus(void)
 {
@@ -706,12 +682,14 @@ static int find_focus(void)
         int dx = cx < n->x ? n->x - cx : cx > n->x + n->w - 1 ? cx - (n->x + n->w - 1) : 0;
         int dy = abs(n->y - cy);
         int c = dx + dy * 4;
-        if (c < bc) { bc = c; best = i; }
+        if (c < bc) {
+            bc = c;
+            best = i;
+        }
     }
     return best;
 }
 
-/* which label is under screen cell (sx, sy)? */
 static int hit(int sx, int sy)
 {
     if (sx < 0 || sy < 0 || sx >= cvw || sy >= cvh) return -1;
@@ -725,21 +703,28 @@ static int hit(int sx, int sy)
 
 static void clamp_cam(void)
 {
-    if (worldw + 12 <= cvw) camx = -(cvw - worldw) / 2;
-    else {
+    if (worldw + 12 <= cvw) {
+        camx = -(cvw - worldw) / 2;
+    } else {
         if (camx < -6) camx = -6;
         if (camx > worldw - cvw + 6) camx = worldw - cvw + 6;
     }
-    if (worldh + 2 <= cvh) camy = -(cvh - worldh) / 2;
-    else {
+    if (worldh + 2 <= cvh) {
+        camy = -(cvh - worldh) / 2;
+    } else {
         if (camy < -1) camy = -1;
         if (camy > worldh - cvh + 1) camy = worldh - cvh + 1;
     }
 }
 
-static void save_old(void) { for (int i = 0; i < N; i++) { nd[i].ox = nd[i].x; nd[i].oy = nd[i].y; } }
+static void save_old(void)
+{
+    for (int i = 0; i < N; i++) {
+        nd[i].ox = nd[i].x;
+        nd[i].oy = nd[i].y;
+    }
+}
 
-/* keep node f where it was on screen after a relayout */
 static void reanchor(int f, int ocx, int ocy)
 {
     int a = f;
@@ -748,7 +733,6 @@ static void reanchor(int f, int ocx, int ocy)
     camy = nd[a].y - (nd[a].oy - ocy);
 }
 
-/* the node view changes should hold still: pointer, else selection, else centre */
 static int anchor_node(void)
 {
     int a = hit(mx, my);
@@ -761,7 +745,10 @@ static void zoom_by(int dz, int ocx, int ocy)
 {
     int nz = zoom + dz, a = anchor_node();
     if (nz < 0 || nz > 4 || a < 0) return;
-    save_old(); zoom = nz; layout(); reanchor(a, ocx, ocy);
+    save_old();
+    zoom = nz;
+    layout();
+    reanchor(a, ocx, ocy);
 }
 
 static void toggle(int f, int ocx, int ocy)
@@ -777,8 +764,10 @@ static void set_all(int expand, int ocx, int ocy)
 {
     int a = anchor_node();
     save_old();
-    for (int i = 0; i < N; i++)
-        nd[i].force = (expand || nd[i].d->depth == 0 || nd[i].d->kind == 2) ? 2 : 1;
+    for (int i = 0; i < N; i++) {
+        int keep_open = expand || i == branch_root || nd[i].d->depth == 0 || nd[i].d->kind == 2;
+        nd[i].force = keep_open ? 2 : 1;
+    }
     layout();
     if (a >= 0) reanchor(a, ocx, ocy);
 }
@@ -789,7 +778,7 @@ static void home(void)
     for (int i = 0; i < N; i++) nd[i].force = 0;
     layout();
     int focus = branch_root >= 0 ? branch_root : linux_idx;
-    camx = nd[focus].x - 3;
+    camx = -3;
     camy = nd[focus].y - cvh / 2;
 }
 
@@ -799,24 +788,38 @@ static void resize_canvas(void)
     if (h < 1) h = 1;
     if (h != cvh || COLS != cvw || !cv) {
         Cell *p = realloc(cv, sizeof(Cell) * (size_t)COLS * (size_t)h);
-        if (!p) { endwin(); fputs("distrotree: out of memory\n", stderr); exit(1); }
-        cv = p; cvw = COLS; cvh = h;
+        if (!p) {
+            endwin();
+            fputs("distrotree: out of memory\n", stderr);
+            exit(1);
+        }
+        cv = p;
+        cvw = COLS;
+        cvh = h;
     }
 }
 
 static int dump(void)
 {
     layout();
-    cvw = worldw + 2; cvh = worldh + 1;
+    cvw = worldw + 2;
+    cvh = worldh + 1;
     cv = malloc(sizeof(Cell) * (size_t)cvw * (size_t)cvh);
-    if (!cv) { fputs("distrotree: out of memory\n", stderr); return 1; }
+    if (!cv) {
+        fputs("distrotree: out of memory\n", stderr);
+        return 1;
+    }
     camx = camy = 0;
     draw_tree(-1);
     char b[4];
     for (int y = 0; y < cvh; y++) {
         int last = -1;
-        for (int x = 0; x < cvw; x++) if (cv[y * cvw + x].cp != ' ') last = x;
-        for (int x = 0; x <= last; x++) { enc(cv[y * cvw + x].cp, b); fputs(b, stdout); }
+        for (int x = 0; x < cvw; x++)
+            if (cv[y * cvw + x].cp != ' ') last = x;
+        for (int x = 0; x <= last; x++) {
+            enc(cv[y * cvw + x].cp, b);
+            fputs(b, stdout);
+        }
         putchar('\n');
     }
     free(cv);
@@ -827,24 +830,27 @@ static void apply_startup_fold(void)
 {
     if (startup_fold) {
         for (int i = 0; i < N; i++)
-            nd[i].force = startup_fold;
+            nd[i].force = (startup_fold == 1 && i == branch_root) ? 2 : startup_fold;
     }
-
     if (startup_select >= 0) {
         for (int p = nd[startup_select].parent; p >= 0; p = nd[p].parent)
             nd[p].force = 2;
     }
-
     layout();
 }
 
-/* ---------- terminal setup / teardown ---------- */
-
-static void on_signal(int s) { (void)s; quit_flag = 1; }
+static void on_signal(int s)
+{
+    (void)s;
+    quit_flag = 1;
+}
 
 static void shutdown_ui(void)
 {
-    if (have_mouse) { fputs("\033[?1003l", stdout); fflush(stdout); }
+    if (have_mouse) {
+        fputs("\033[?1003l", stdout);
+        fflush(stdout);
+    }
     endwin();
 }
 
@@ -860,21 +866,16 @@ static void init_colors(void)
         init_pair((short)(k + 1), wide ? c256[k] : c8[k % 6], (short)bg);
         pal_bold[k] = wide ? 0 : (k >= 6 || k % 6 == 1);
     }
-
 }
 
 int main(int argc, char **argv)
 {
     setlocale(LC_ALL, "");
-
     const char *cs = nl_langinfo(CODESET);
     utf8 = cs && (strstr(cs, "UTF-8") || strstr(cs, "utf8") || strstr(cs, "UTF8"));
 
-    int dump_mode = 0;
-    int dump_zoom = 3;
-    int random_mode = 0;
-    const char *branch_arg = NULL;
-    const char *search_arg = NULL;
+    int dump_mode = 0, dump_zoom = 3, random_mode = 0;
+    const char *branch_arg = NULL, *search_arg = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
@@ -888,7 +889,7 @@ int main(int argc, char **argv)
             startup_fold = 2;
         } else if (!strcmp(argv[i], "--random")) {
             random_mode = 1;
-        }  else if (!strcmp(argv[i], "--branch")) {
+        } else if (!strcmp(argv[i], "--branch")) {
             if (i + 1 >= argc || argv[i + 1][0] == '-') {
                 fputs("distrotree: --branch requires a system name\n", stderr);
                 return 1;
@@ -902,10 +903,7 @@ int main(int argc, char **argv)
             search_arg = argv[++i];
         } else if (!strcmp(argv[i], "--dump")) {
             dump_mode = 1;
-
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
-                dump_zoom = atoi(argv[++i]);
-            }
+            if (i + 1 < argc && argv[i + 1][0] != '-') dump_zoom = atoi(argv[++i]);
         } else {
             fprintf(stderr, "distrotree: unknown option: %s\n", argv[i]);
             return 1;
@@ -957,19 +955,29 @@ int main(int argc, char **argv)
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGHUP, &sa, NULL);
 
-    if (!initscr()) { fputs("distrotree: cannot initialise terminal\n", stderr); return 1; }
-    cbreak(); noecho(); keypad(stdscr, TRUE); curs_set(0);
-    timeout(250);                                   /* wake up to notice signals */
+    if (!initscr()) {
+        fputs("distrotree: cannot initialise terminal\n", stderr);
+        return 1;
+    }
+    cbreak();
+    noecho();
+    keypad(stdscr, TRUE);
+    curs_set(0);
+    timeout(250);
     init_colors();
     mouseinterval(0);
     have_mouse = mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL) != 0;
-    if (have_mouse) { fputs("\033[?1003h", stdout); fflush(stdout); }   /* motion events */
+    if (have_mouse) {
+        fputs("\033[?1003h", stdout);
+        fflush(stdout);
+    }
     resize_canvas();
     home();
     apply_startup_fold();
 
     if (startup_select >= 0) {
         sel = startup_select;
+        pinned = 1;
         camx = nd[sel].x - cvw / 2;
         camy = nd[sel].y - cvh / 2;
     }
@@ -981,11 +989,14 @@ int main(int argc, char **argv)
             layout();
             clamp_cam();
             if (!have_mouse) {
-                if (sel < 0 || !nd[sel].visible) sel = find_focus();
+                if (!pinned || sel < 0 || !nd[sel].visible) {
+                    sel = find_focus();
+                    pinned = 0;
+                }
             } else {
                 if (sel >= 0 && !nd[sel].visible) sel = -1;
-                int h = hit(mx, my);                /* hover follows the pointer, */
-                if (h >= 0) sel = h;                /* even while the map scrolls */
+                int h = hit(mx, my);
+                if (h >= 0) sel = h;
             }
             erase();
             draw_tree(sel);
@@ -998,13 +1009,14 @@ int main(int argc, char **argv)
         int ch = getch();
         if (ch == ERR) continue;
         dirty = 1;
+        if (ch != KEY_RESIZE) pinned = 0;
         int ocx = camx, ocy = camy;
         switch (ch) {
         case 'q': case 'Q': quit_flag = 1; break;
-        case KEY_LEFT:  case 'h': camx -= 6;  break;
-        case KEY_RIGHT: case 'l': camx += 6;  break;
-        case KEY_UP:    case 'k': camy -= 3;  break;
-        case KEY_DOWN:  case 'j': camy += 3;  break;
+        case KEY_LEFT:  case 'h': camx -= 6; break;
+        case KEY_RIGHT: case 'l': camx += 6; break;
+        case KEY_UP:    case 'k': camy -= 3; break;
+        case KEY_DOWN:  case 'j': camy += 3; break;
         case KEY_SLEFT:  case 'H': camx -= 24; break;
         case KEY_SRIGHT: case 'L': camx += 24; break;
         case KEY_SR:     case 'K': camy -= 12; break;
@@ -1022,7 +1034,8 @@ int main(int argc, char **argv)
         case KEY_MOUSE: {
             MEVENT ev;
             if (getmouse(&ev) != OK) break;
-            mx = ev.x; my = ev.y;
+            mx = ev.x;
+            my = ev.y;
             mmask_t b = ev.bstate;
             int up = (b & BUTTON4_PRESSED) != 0, down = 0;
 #ifdef BUTTON5_PRESSED
@@ -1030,16 +1043,19 @@ int main(int argc, char **argv)
 #endif
             if (up || down) {
                 int dir = up ? -1 : 1;
-                if (b & BUTTON_CTRL) zoom_by(-dir, ocx, ocy);      /* wheel up = zoom in */
+                if (b & BUTTON_CTRL) zoom_by(-dir, ocx, ocy);
                 else if (b & BUTTON_SHIFT) camx += dir * 8;
                 else camy += dir * 3;
             } else if (b & (BUTTON1_PRESSED | BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED)) {
                 int h = hit(mx, my);
-                if (h >= 0) { sel = h; toggle(h, ocx, ocy); }
+                if (h >= 0) {
+                    sel = h;
+                    toggle(h, ocx, ocy);
+                }
             }
             break;
         }
-        case KEY_RESIZE: break;               /* loop re-reads LINES/COLS */
+        case KEY_RESIZE: break;
         default: break;
         }
     }
