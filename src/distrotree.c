@@ -244,7 +244,7 @@ _Static_assert(N > 0, "defs[] is empty");
 
 #define MAXD 16
 #define NPAL 12
-#define PANEL 6
+#define PANEL 7
 #define NOTE_LINES 3
 
 typedef struct {
@@ -559,8 +559,26 @@ static chtype acs_for(unsigned cp)
     case 0x2534: return ACS_BTEE;
     case 0x252C: return ACS_TTEE;
     case 0x253C: return ACS_PLUS;
+    case 0x256D: return ACS_ULCORNER;
+    case 0x256E: return ACS_URCORNER;
+    case 0x256F: return ACS_LRCORNER;
+    case 0x2570: return ACS_LLCORNER;
     default:     return '?';
     }
+}
+
+static void draw_glyph(int y, int x, unsigned cp, int attr)
+{
+    attrset(attr);
+    if (utf8) {
+        wchar_t w[2] = { (wchar_t)cp, 0 };
+        cchar_t cc;
+        memset(&cc, 0, sizeof cc);
+        if (setcchar(&cc, w, (attr_t)(attr & ~A_COLOR), (short)PAIR_NUMBER(attr), NULL) == OK
+            && mvadd_wch(y, x, &cc) == OK)
+            return;
+    }
+    mvaddch(y, x, acs_for(cp));
 }
 
 static void blit(void)
@@ -569,21 +587,12 @@ static void blit(void)
         for (int x = 0; x < cvw; x++) {
             Cell c = cv[y * cvw + x];
             if (c.cp == ' ') continue;
-            attrset(c.attr);
             if (c.cp < 0x80) {
+                attrset(c.attr);
                 mvaddch(y, x, (chtype)c.cp);
-                continue;
+            } else {
+                draw_glyph(y, x, c.cp, c.attr);
             }
-            int done = 0;
-            if (utf8) {
-                wchar_t w[2] = { (wchar_t)c.cp, 0 };
-                cchar_t cc;
-                memset(&cc, 0, sizeof cc);
-                if (setcchar(&cc, w, (attr_t)(c.attr & ~A_COLOR), (short)PAIR_NUMBER(c.attr), NULL) == OK
-                    && mvadd_wch(y, x, &cc) == OK)
-                    done = 1;
-            }
-            if (!done) mvaddch(y, x, acs_for(c.cp));
         }
     }
     attrset(A_NORMAL);
@@ -619,48 +628,80 @@ static void wrapn(const char *s, int w, char l[NOTE_LINES][256])
     }
 }
 
+static void box_row(int y, int W, unsigned l, unsigned m, unsigned r, int attr)
+{
+    draw_glyph(y, 0, l, attr);
+    for (int x = 1; x < W - 1; x++) draw_glyph(y, x, m, attr);
+    draw_glyph(y, W - 1, r, attr);
+}
+
+static void put_text(int y, int x, int w, const char *s, int attr)
+{
+    if (w < 1) return;
+    attrset(attr);
+    mvaddnstr(y, x, s, w);
+}
+
 static void panel(int f)
 {
-    int W = COLS, y0 = LINES - PANEL, tw = W - 2;
+    int W = COLS, y0 = LINES - PANEL, tw = W - 4;
     if (y0 < 0 || tw < 1) return;
     for (int r = 0; r < PANEL; r++) {
         move(y0 + r, 0);
         clrtoeol();
     }
+
+    int ba = f >= 0 ? (fattr(f) & ~A_REVERSE) : A_DIM;
+    box_row(y0, W, 0x256D, 0x2500, 0x256E, ba);
+    for (int r = 1; r <= NOTE_LINES + 1; r++) {
+        draw_glyph(y0 + r, 0, 0x2502, ba);
+        draw_glyph(y0 + r, W - 1, 0x2502, ba);
+    }
+    box_row(y0 + NOTE_LINES + 2, W, 0x2570, 0x2500, 0x256F, ba);
+
+    char head[1024] = "distrotree";
     if (f >= 0) {
-        Node *n = &nd[f];
         int chain[MAXD + 1], k = 0;
-        char path[1024] = "";
+        head[0] = 0;
         for (int i = f; i >= 0 && k <= MAXD; i = nd[i].parent) chain[k++] = i;
         for (int j = k - 1; j >= 0; j--) {
-            strcat(path, nd[chain[j]].d->name);
-            if (j) strcat(path, " > ");
+            strcat(head, nd[chain[j]].d->name);
+            if (j) strcat(head, " > ");
         }
-        int pl = (int)strlen(path);
-        const char *ps = pl > tw ? path + pl - tw : path;
-        attron(A_BOLD);
-        mvaddnstr(y0, 1, ps, tw);
-        attroff(A_BOLD);
+    }
+    int room = W - 6, hl = (int)strlen(head);
+    if (room >= 1) {
+        char lab[1100];
+        snprintf(lab, sizeof lab, " %s ", hl > room ? head + hl - room : head);
+        put_text(y0, 2, W - 4, lab, A_BOLD);
+    }
 
-        attron(fattr(f) | A_BOLD);
-        mvprintw(y0 + 1, 1, "%s (%d)", n->d->name, n->d->year);
-        attroff(fattr(f) | A_BOLD);
-        if (n->ndesc > 0) printw("   %d descendant%s", n->ndesc, n->ndesc == 1 ? "" : "s");
-        if (n->first >= 0) printw("   [%s: %s]", have_mouse ? "click" : "Enter", n->open ? "fold" : "unfold");
+    if (f >= 0) {
+        Node *n = &nd[f];
+        char t1[160], t2[160];
+        snprintf(t1, sizeof t1, "%s (%d)", n->d->name, n->d->year);
+        t2[0] = 0;
+        int off = 0;
+        if (n->ndesc > 0)
+            off += snprintf(t2 + off, sizeof t2 - off, "   %d descendant%s", n->ndesc, n->ndesc == 1 ? "" : "s");
+        if (n->first >= 0)
+            snprintf(t2 + off, sizeof t2 - off, "   [%s: %s]", have_mouse ? "click" : "Enter", n->open ? "fold" : "unfold");
+        put_text(y0 + 1, 2, tw, t1, fattr(f) | A_BOLD);
+        int l1 = (int)strlen(t1);
+        if (l1 < tw) put_text(y0 + 1, 2 + l1, tw - l1, t2, A_NORMAL);
 
         char l[NOTE_LINES][256];
         wrapn(n->d->note, tw, l);
-        for (int i = 0; i < NOTE_LINES; i++) mvaddnstr(y0 + 2 + i, 1, l[i], tw);
+        for (int i = 0; i < NOTE_LINES; i++) put_text(y0 + 2 + i, 2, tw, l[i], A_NORMAL);
     } else {
         char s[96];
         snprintf(s, sizeof s, "%d systems in the tree", N);
-        attron(A_BOLD);
-        mvaddnstr(y0, 1, s, tw);
-        attroff(A_BOLD);
-        mvaddnstr(y0 + 1, 1, "Hover a name with the mouse to read its story.", tw);
-        mvaddnstr(y0 + 2, 1, "Click or Enter folds a branch. Wheel scrolls, ctrl+wheel or +/- zooms.", tw);
-        mvaddnstr(y0 + 3, 1, "c collapses to an overview, a expands everything, 0 resets the view.", tw);
+        put_text(y0 + 1, 2, tw, s, A_BOLD);
+        put_text(y0 + 2, 2, tw, "Hover a name with the mouse to read its story.", A_NORMAL);
+        put_text(y0 + 3, 2, tw, "Click or Enter folds a branch. Wheel scrolls, ctrl+wheel or +/- zooms.", A_NORMAL);
+        put_text(y0 + 4, 2, tw, "c collapses to an overview, a expands everything, 0 resets the view.", A_NORMAL);
     }
+
     char bar[512];
     int bw = W < 511 ? W : 511;
     snprintf(bar, sizeof bar, "%-*s", bw, " arrows/hjkl pan | wheel scroll | +/- zoom | click fold | c/a all | 0 reset | q quit");
@@ -668,9 +709,8 @@ static void panel(int f)
     snprintf(z, sizeof z, "zoom %d/5 ", zoom + 1);
     int zl = (int)strlen(z);
     if (bw > zl + 2) memcpy(bar + bw - zl, z, zl);
-    attron(A_REVERSE);
-    mvaddnstr(y0 + PANEL - 1, 0, bar, bw);
-    attroff(A_REVERSE);
+    put_text(y0 + PANEL - 1, 0, bw, bar, A_REVERSE);
+    attrset(A_NORMAL);
 }
 
 static int find_focus(void)
